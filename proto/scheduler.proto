@@ -1,0 +1,120 @@
+syntax = "proto3";
+
+package scheduler.v1;
+
+// ---------------------------------------------------------------------------
+// Client-facing API
+// ---------------------------------------------------------------------------
+service SchedulerService {
+  // Submit a serialized physical plan. Returns immediately with a query id.
+  rpc SubmitQuery(SubmitQueryRequest) returns (SubmitQueryResponse);
+  rpc GetQueryStatus(GetQueryStatusRequest) returns (GetQueryStatusResponse);
+  // Streams final results. Phase 1 uses Arrow IPC bytes; may move to Arrow Flight.
+  rpc FetchResults(FetchResultsRequest) returns (stream ResultBatch);
+  rpc CancelQuery(CancelQueryRequest) returns (CancelQueryResponse);
+}
+
+enum QueryState {
+  QUERY_STATE_UNSPECIFIED = 0;
+  QUERY_STATE_QUEUED = 1;
+  QUERY_STATE_RUNNING = 2;
+  QUERY_STATE_SUCCEEDED = 3;
+  QUERY_STATE_FAILED = 4;
+  QUERY_STATE_CANCELLED = 5;
+}
+
+enum TaskState {
+  TASK_STATE_UNSPECIFIED = 0;
+  TASK_STATE_PENDING = 1;
+  TASK_STATE_RUNNING = 2;
+  TASK_STATE_SUCCEEDED = 3;
+  TASK_STATE_FAILED = 4;
+}
+
+message QueryOptions {
+  int32 priority = 1;
+  uint64 timeout_ms = 2;
+}
+
+message SubmitQueryRequest {
+  // Serialized physical plan (datafusion-proto in later phases).
+  bytes plan = 1;
+  QueryOptions options = 2;
+}
+message SubmitQueryResponse { string query_id = 1; }
+
+message GetQueryStatusRequest { string query_id = 1; }
+message FragmentStatus {
+  uint32 fragment_id = 1;
+  TaskState state = 2;
+}
+message GetQueryStatusResponse {
+  string query_id = 1;
+  QueryState state = 2;
+  repeated FragmentStatus fragments = 3;
+  string error_message = 4;
+}
+
+message FetchResultsRequest { string query_id = 1; }
+message ResultBatch { bytes arrow_ipc = 1; }
+
+message CancelQueryRequest { string query_id = 1; }
+message CancelQueryResponse {}
+
+// ---------------------------------------------------------------------------
+// Worker -> scheduler API
+// ---------------------------------------------------------------------------
+service WorkerRegistry {
+  rpc RegisterWorker(RegisterWorkerRequest) returns (RegisterWorkerResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc ReportTaskStatus(ReportTaskStatusRequest) returns (ReportTaskStatusResponse);
+}
+
+message WorkerResources {
+  uint32 slots = 1;
+  uint64 memory_bytes = 2;
+}
+message RegisterWorkerRequest {
+  string address = 1;
+  WorkerResources resources = 2;
+}
+message RegisterWorkerResponse {
+  string worker_id = 1;
+  uint32 heartbeat_interval_ms = 2;
+}
+
+message HeartbeatRequest {
+  string worker_id = 1;
+  uint32 free_slots = 2;
+}
+message HeartbeatResponse {
+  // False means the scheduler does not know this worker; re-register.
+  bool known = 1;
+}
+
+message ReportTaskStatusRequest {
+  string query_id = 1;
+  uint32 fragment_id = 2;
+  TaskState state = 3;
+  string error_message = 4;
+}
+message ReportTaskStatusResponse {}
+
+// ---------------------------------------------------------------------------
+// Scheduler -> worker API
+// ---------------------------------------------------------------------------
+service WorkerService {
+  rpc ExecuteFragment(ExecuteFragmentRequest) returns (ExecuteFragmentResponse);
+}
+
+message InputLocation {
+  uint32 fragment_id = 1;
+  string worker_address = 2;
+}
+message ExecuteFragmentRequest {
+  string query_id = 1;
+  uint32 fragment_id = 2;
+  bytes fragment_plan = 3;
+  repeated InputLocation inputs = 4;
+}
+message ExecuteFragmentResponse { bool accepted = 1; }

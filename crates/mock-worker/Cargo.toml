@@ -1,0 +1,9 @@
+[package]
+name = "mock-worker"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+scheduler-proto = { path = "../scheduler-proto" }
+tonic.workspace = true
+tokio.workspace = true

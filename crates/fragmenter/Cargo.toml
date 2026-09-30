@@ -1,0 +1,6 @@
+[package]
+name = "fragmenter"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

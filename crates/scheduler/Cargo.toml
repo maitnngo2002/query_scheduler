@@ -1,0 +1,11 @@
+[package]
+name = "scheduler"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+scheduler-proto = { path = "../scheduler-proto" }
+fragmenter = { path = "../fragmenter" }
+tonic.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
