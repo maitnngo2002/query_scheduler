@@ -1,0 +1,11 @@
+[package]
+name = "df-spike"
+version.workspace = true
+edition.workspace = true
+
+# DataFusion is pinned exactly: its physical-plan API changes between releases,
+# and serialized plans are not guaranteed to be compatible across versions.
+[dependencies]
+datafusion = "=55.1.0"
+datafusion-proto = "=55.1.0"
+tokio.workspace = true

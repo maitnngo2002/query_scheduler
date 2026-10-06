@@ -3,15 +3,14 @@ syntax = "proto3";
 package scheduler.v1;
 
 // ---------------------------------------------------------------------------
-// Client-facing API
+// Shared types
 // ---------------------------------------------------------------------------
-service SchedulerService {
-  // Submit a serialized physical plan. Returns immediately with a query id.
-  rpc SubmitQuery(SubmitQueryRequest) returns (SubmitQueryResponse);
-  rpc GetQueryStatus(GetQueryStatusRequest) returns (GetQueryStatusResponse);
-  // Streams final results. Phase 1 uses Arrow IPC bytes; may move to Arrow Flight.
-  rpc FetchResults(FetchResultsRequest) returns (stream ResultBatch);
-  rpc CancelQuery(CancelQueryRequest) returns (CancelQueryResponse);
+
+// A task is one partition of one fragment: the unit of scheduling.
+message TaskId {
+  string query_id = 1;
+  uint32 fragment_id = 2;
+  uint32 partition = 3;
 }
 
 enum QueryState {
@@ -29,6 +28,28 @@ enum TaskState {
   TASK_STATE_RUNNING = 2;
   TASK_STATE_SUCCEEDED = 3;
   TASK_STATE_FAILED = 4;
+  TASK_STATE_CANCELLED = 5;
+}
+
+message TaskMetrics {
+  uint64 start_unix_ms = 1;
+  uint64 end_unix_ms = 2;
+  uint64 output_rows = 3;
+  uint64 output_bytes = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Client-facing API
+// ---------------------------------------------------------------------------
+service SchedulerService {
+  // Submit a serialized physical plan. Returns immediately with a query id.
+  rpc SubmitQuery(SubmitQueryRequest) returns (SubmitQueryResponse);
+  rpc GetQueryStatus(GetQueryStatusRequest) returns (GetQueryStatusResponse);
+  // Per-task timing and shuffle statistics, used for scaling analysis.
+  rpc GetQueryMetrics(GetQueryMetricsRequest) returns (GetQueryMetricsResponse);
+  // Streams final results. Phase 1 uses Arrow IPC bytes; may move to Arrow Flight.
+  rpc FetchResults(FetchResultsRequest) returns (stream ResultBatch);
+  rpc CancelQuery(CancelQueryRequest) returns (CancelQueryResponse);
 }
 
 message QueryOptions {
@@ -44,15 +65,26 @@ message SubmitQueryRequest {
 message SubmitQueryResponse { string query_id = 1; }
 
 message GetQueryStatusRequest { string query_id = 1; }
-message FragmentStatus {
-  uint32 fragment_id = 1;
+message TaskStatus {
+  TaskId task = 1;
   TaskState state = 2;
+  string worker_id = 3;
 }
 message GetQueryStatusResponse {
   string query_id = 1;
   QueryState state = 2;
-  repeated FragmentStatus fragments = 3;
+  repeated TaskStatus tasks = 3;
   string error_message = 4;
+}
+
+message GetQueryMetricsRequest { string query_id = 1; }
+message TaskMetricsEntry {
+  TaskId task = 1;
+  TaskMetrics metrics = 2;
+}
+message GetQueryMetricsResponse {
+  string query_id = 1;
+  repeated TaskMetricsEntry tasks = 2;
 }
 
 message FetchResultsRequest { string query_id = 1; }
@@ -93,10 +125,10 @@ message HeartbeatResponse {
 }
 
 message ReportTaskStatusRequest {
-  string query_id = 1;
-  uint32 fragment_id = 2;
-  TaskState state = 3;
-  string error_message = 4;
+  TaskId task = 1;
+  TaskState state = 2;
+  string error_message = 3;
+  TaskMetrics metrics = 4;
 }
 message ReportTaskStatusResponse {}
 
@@ -104,17 +136,33 @@ message ReportTaskStatusResponse {}
 // Scheduler -> worker API
 // ---------------------------------------------------------------------------
 service WorkerService {
-  rpc ExecuteFragment(ExecuteFragmentRequest) returns (ExecuteFragmentResponse);
+  rpc ExecuteTask(ExecuteTaskRequest) returns (ExecuteTaskResponse);
+  // Streams one bucket of a finished task's output. The scheduler uses it to
+  // fetch final results; downstream tasks use it to pull shuffle input.
+  rpc FetchTaskOutput(FetchTaskOutputRequest) returns (stream OutputChunk);
 }
 
-message InputLocation {
+message FetchTaskOutputRequest {
+  TaskId task = 1;
+  uint32 bucket = 2;
+}
+message OutputChunk { bytes data = 1; }
+
+// Where to pull one input from: bucket `bucket` of the output of one
+// producer task (fragment_id, producer_partition) running on worker_address.
+// A task has one ProducerLocation per producer task of each input fragment.
+message ProducerLocation {
   uint32 fragment_id = 1;
-  string worker_address = 2;
+  uint32 producer_partition = 2;
+  string worker_address = 3;
+  uint32 bucket = 4;
 }
-message ExecuteFragmentRequest {
-  string query_id = 1;
-  uint32 fragment_id = 2;
-  bytes fragment_plan = 3;
-  repeated InputLocation inputs = 4;
+
+message ExecuteTaskRequest {
+  TaskId task = 1;
+  bytes fragment_plan = 2;
+  // Number of hash buckets this task writes (1 if not repartitioned).
+  uint32 output_partitions = 3;
+  repeated ProducerLocation inputs = 4;
 }
-message ExecuteFragmentResponse { bool accepted = 1; }
+message ExecuteTaskResponse { bool accepted = 1; }

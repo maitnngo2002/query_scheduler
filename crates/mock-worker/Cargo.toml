@@ -7,3 +7,4 @@ edition.workspace = true
 scheduler-proto = { path = "../scheduler-proto" }
 tonic.workspace = true
 tokio.workspace = true
+tokio-stream.workspace = true

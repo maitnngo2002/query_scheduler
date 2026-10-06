@@ -13,12 +13,16 @@
 //! `FragmentedPlan::fragments`. A fragment's dependencies therefore always have
 //! smaller ids, and the root fragment is always last.
 
+pub mod tasks;
+
 use std::collections::HashSet;
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 pub type FragmentId = u32;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExchangeKind {
     Hash(Vec<String>),
     RoundRobin,
@@ -26,13 +30,13 @@ pub enum ExchangeKind {
     Coalesce,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AggMode {
     Partial,
     Final,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PlanNode {
     Scan { table: String },
     Filter { predicate: String, input: Box<PlanNode> },

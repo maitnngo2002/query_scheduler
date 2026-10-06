@@ -5,6 +5,15 @@ members = [
     "crates/fragmenter",
     "crates/scheduler",
     "crates/mock-worker",
+    "crates/df-spike",
+]
+# DataFusion is a heavy build, so plain `cargo build` / `cargo test` skip the
+# spike. CI uses `--workspace` and builds everything.
+default-members = [
+    "crates/scheduler-proto",
+    "crates/fragmenter",
+    "crates/scheduler",
+    "crates/mock-worker",
 ]
 
 [workspace.package]
@@ -17,3 +26,5 @@ prost = "0.13"
 tonic-build = "0.12"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync"] }
 tokio-stream = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

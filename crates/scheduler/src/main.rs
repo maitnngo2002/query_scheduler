@@ -1,18 +1,14 @@
-mod queries;
-mod service;
-mod workers;
-
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use scheduler_proto::v1::scheduler_service_server::SchedulerServiceServer;
-use scheduler_proto::v1::worker_registry_server::WorkerRegistryServer;
-use tonic::transport::Server;
+use fragmenter::tasks::ExpandConfig;
+use scheduler::engine::Engine;
 
-use crate::queries::QueryManager;
-use crate::service::{RegistrySvc, SchedulerSvc};
-use crate::workers::WorkerManager;
+fn env_u32(name: &str, default: u32) -> u32 {
+    std::env::var(name).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -20,28 +16,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "127.0.0.1:50051".to_string())
         .parse()?;
 
-    let workers = Arc::new(WorkerManager::new());
-    let queries = Arc::new(QueryManager::new());
+    // Partitions per shuffle and scan splits per table. Per-table splits will
+    // come from table metadata once a catalog is wired in.
+    let cfg = ExpandConfig {
+        shuffle_partitions: env_u32("SCHEDULER_SHUFFLE_PARTITIONS", 4),
+        default_scan_splits: env_u32("SCHEDULER_SCAN_SPLITS", 1),
+        scan_splits: HashMap::new(),
+    };
+    let engine = Arc::new(Engine::new(cfg));
 
-    // Periodically evict workers that stopped sending heartbeats.
+    // Dispatch ready tasks to workers.
+    tokio::spawn(engine.clone().run_dispatcher());
+
+    // Evict workers that stopped sending heartbeats, and re-queue their in-flight tasks.
     {
-        let workers = workers.clone();
+        let engine = engine.clone();
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_secs(5));
             loop {
                 tick.tick().await;
-                for id in workers.evict_stale(Duration::from_secs(15)) {
+                let evicted = engine.workers.evict_stale(Duration::from_secs(15));
+                for id in &evicted {
                     eprintln!("evicted stale worker {id}");
                 }
+                engine.handle_evicted_workers(&evicted);
             }
         });
     }
 
     eprintln!("scheduler listening on {addr}");
-    Server::builder()
-        .add_service(SchedulerServiceServer::new(SchedulerSvc { queries }))
-        .add_service(WorkerRegistryServer::new(RegistrySvc { workers }))
-        .serve(addr)
-        .await?;
+    scheduler::serve(addr, engine).await?;
     Ok(())
 }

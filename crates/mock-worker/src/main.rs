@@ -1,6 +1,7 @@
 //! Mock worker: registers with the scheduler, heartbeats, and "executes"
 //! fragments by sleeping and then reporting success. Used to develop and test
-//! the scheduler without a real execution engine.
+//! the scheduler without a real execution engine. Executes one task (one
+//! partition of a fragment) at a time per request.
 //!
 //! Env vars:
 //!   SCHEDULER_ADDR   scheduler endpoint     (default http://127.0.0.1:50051)
@@ -15,9 +16,10 @@ use std::time::Duration;
 use scheduler_proto::v1::worker_registry_client::WorkerRegistryClient;
 use scheduler_proto::v1::worker_service_server::{WorkerService, WorkerServiceServer};
 use scheduler_proto::v1::{
-    ExecuteFragmentRequest, ExecuteFragmentResponse, HeartbeatRequest, RegisterWorkerRequest,
-    ReportTaskStatusRequest, TaskState, WorkerResources,
+    ExecuteTaskRequest, ExecuteTaskResponse, FetchTaskOutputRequest, HeartbeatRequest,
+    OutputChunk, RegisterWorkerRequest, ReportTaskStatusRequest, TaskState, WorkerResources,
 };
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::{Channel, Server};
 use tonic::{Request, Response, Status};
 
@@ -28,10 +30,10 @@ struct MockWorker {
 
 #[tonic::async_trait]
 impl WorkerService for MockWorker {
-    async fn execute_fragment(
+    async fn execute_task(
         &self,
-        request: Request<ExecuteFragmentRequest>,
-    ) -> Result<Response<ExecuteFragmentResponse>, Status> {
+        request: Request<ExecuteTaskRequest>,
+    ) -> Result<Response<ExecuteTaskResponse>, Status> {
         let req = request.into_inner();
         let scheduler_addr = self.scheduler_addr.clone();
         let delay = self.delay;
@@ -41,10 +43,10 @@ impl WorkerService for MockWorker {
             match WorkerRegistryClient::connect(scheduler_addr).await {
                 Ok(mut client) => {
                     let report = ReportTaskStatusRequest {
-                        query_id: req.query_id,
-                        fragment_id: req.fragment_id,
+                        task: req.task,
                         state: TaskState::Succeeded as i32,
                         error_message: String::new(),
+                        metrics: None,
                     };
                     if let Err(e) = client.report_task_status(report).await {
                         eprintln!("failed to report task status: {e}");
@@ -54,7 +56,28 @@ impl WorkerService for MockWorker {
             }
         });
 
-        Ok(Response::new(ExecuteFragmentResponse { accepted: true }))
+        Ok(Response::new(ExecuteTaskResponse { accepted: true }))
+    }
+
+    type FetchTaskOutputStream = ReceiverStream<Result<OutputChunk, Status>>;
+
+    /// Returns a canned payload that identifies the task and bucket, so tests
+    /// and demos can tell which task a result came from.
+    async fn fetch_task_output(
+        &self,
+        request: Request<FetchTaskOutputRequest>,
+    ) -> Result<Response<Self::FetchTaskOutputStream>, Status> {
+        let req = request.into_inner();
+        let task = req.task.unwrap_or_default();
+        let payload = format!(
+            "mock-result:{}:{}:{}:{}",
+            task.query_id, task.fragment_id, task.partition, req.bucket
+        );
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        tokio::spawn(async move {
+            let _ = tx.send(Ok(OutputChunk { data: payload.into_bytes() })).await;
+        });
+        Ok(Response::new(ReceiverStream::new(rx)))
     }
 }
 

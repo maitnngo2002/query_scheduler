@@ -1,0 +1,75 @@
+{
+  "Sort": {
+    "keys": [
+      "revenue"
+    ],
+    "input": {
+      "Exchange": {
+        "kind": "Coalesce",
+        "input": {
+          "Aggregate": {
+            "mode": "Final",
+            "group_by": [
+              "segment"
+            ],
+            "input": {
+              "Exchange": {
+                "kind": {
+                  "Hash": [
+                    "segment"
+                  ]
+                },
+                "input": {
+                  "Aggregate": {
+                    "mode": "Partial",
+                    "group_by": [
+                      "segment"
+                    ],
+                    "input": {
+                      "Join": {
+                        "on": "o.cust_id = c.id",
+                        "left": {
+                          "Exchange": {
+                            "kind": {
+                              "Hash": [
+                                "cust_id"
+                              ]
+                            },
+                            "input": {
+                              "Filter": {
+                                "predicate": "order_date >= 2024-01-01",
+                                "input": {
+                                  "Scan": {
+                                    "table": "orders"
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        },
+                        "right": {
+                          "Exchange": {
+                            "kind": {
+                              "Hash": [
+                                "id"
+                              ]
+                            },
+                            "input": {
+                              "Scan": {
+                                "table": "customers"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
