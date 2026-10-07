@@ -77,6 +77,8 @@ A simple model guides the analysis:
 
 ### Worked example: tasks for one query
 
+> This table uses a simplified plan shape. The real DataFusion 55.1 plan for the same query has 6 fragments and 15 tasks (with one scan split per table); see the Progress Log, "Phase 2b-2, slice 1 findings".
+
 For the join, aggregate, and sort query used in the design walkthrough, with 4 hash partitions:
 
 | Fragment | Work | Tasks | Why |
@@ -316,11 +318,93 @@ Why: until now the only end-to-end check was the manual README run, so a regress
 * Not yet verified: the spike was written from the 55.1 docs without compiling, and `generate_series` column naming, the `COPY ... TO ... STORED AS PARQUET` single-file behavior, and the join-mode settings may need adjusting.
 * What to look for in its output: which operators appear at exchange boundaries (expected: repartition, coalesce, and sorted-merge operators), whether the join is partitioned, and whether the decoded plan executes.
 
-### Next: Phase 2b-2 (DataFusion integration), in slices
+### Phase 2b-2, slice 1 findings: the real plan (spike output received)
 
-Each slice is small enough to compile and check before the next one starts.
+The spike ran on the first attempt: the plan serialized with `datafusion-proto`, decoded, and executed (3 result rows), and the debug output was identical after the round trip. The real plan for the worked-example query (4 target partitions, partitioned joins):
 
-1. **Version spike (added, output pending).** See above. Its output replaces the representative plan used in the walkthrough with real output and shows the exact operator names for DataFusion 55.1.0.
-2. **Adapter.** Cut a real physical plan at exchange operators (`RepartitionExec` and the sorted-merge operator) and replace them with shuffle-write and shuffle-read nodes, in the style of existing distributed DataFusion schedulers, so each fragment is a valid DataFusion plan. The fragmenter's cut logic is reused.
-3. **Real worker.** Run a task's plan with DataFusion, write hash-partitioned output, serve it through `FetchTaskOutput`, and have shuffle-read nodes pull from producers.
-4. **Wire `FetchResults` to real Arrow output**, then run TPC-H queries and compare against single-node DataFusion.
+```
+SortPreservingMergeExec: [revenue DESC]
+  ProjectionExec
+    SortExec: preserve_partitioning=[true]
+      AggregateExec: mode=FinalPartitioned, gby=[segment]
+        RepartitionExec: Hash([segment], 4), input_partitions=4
+          AggregateExec: mode=Partial, gby=[segment]
+            HashJoinExec: mode=Partitioned, on=[(id, cust_id)]
+              RepartitionExec: Hash([id], 4), input_partitions=1
+                DataSourceExec: customers.parquet
+              RepartitionExec: Hash([cust_id], 4), input_partitions=4
+                FilterExec: order_date >= 2024-01-01
+                  RepartitionExec: RoundRobinBatch(4), input_partitions=1
+                    DataSourceExec: orders.parquet
+```
+
+What it taught us, and decisions
+
+1. **Exchange operators.** `RepartitionExec` (hash and round-robin) and `SortPreservingMergeExec` mark the boundaries. `CoalescePartitionsExec` is expected in other plans.
+2. **Cut rules** (implemented in `df-adapter`):
+   * `RepartitionExec`: the node is replaced by a shuffle reader; the subtree below becomes a producer fragment that writes buckets.
+   * `SortPreservingMergeExec` and `CoalescePartitionsExec`: the operator stays in the consumer fragment and its child is cut, so the consumer reads each producer task's output as a separate partition and merges.
+3. **A task is `(fragment, partition)`:** it runs the fragment's plan for one partition index. A fragment has as many tasks as its root operator has output partitions. This avoids rewriting scans per task.
+4. **The real plan is 6 fragments and 15 tasks** (1, 1, 4, 4, 4, 1), not the 5 fragments and 11 tasks of the simplified example.
+5. **The sort is distributed.** Each of the 4 partitions sorts locally and the root merges the sorted streams, which scales better than the single global sort assumed earlier.
+6. **The round-robin repartition on the orders scan exists only because the single file gave one scan partition.** With several scan partitions (file or row-group splits) it disappears, so scan splitting directly sets how parallel the scan stage is.
+7. **Dynamic filters are present.** The orders scan carries a `DynamicFilter` fed by the join. That sharing works inside one process, but across fragments the scan never receives updates, so it would only lose the optimization, not return wrong results. The spike now prints the dynamic-filter settings so we can choose the setting to disable. Decision pending that output.
+8. **`DataSourceExec` embeds absolute file paths.** Every worker must be able to read the same paths, through a shared filesystem, identical local copies, or an object store.
+9. **API facts for DataFusion 55.1:** `as_any()` was removed from `ExecutionPlan` in 54; use `plan.downcast_ref::<T>()` and `plan.is::<T>()` directly on `Arc<dyn ExecutionPlan>`. `properties()` returns `&Arc<PlanProperties>`; read partitioning through `ExecutionPlanProperties::output_partitioning()`.
+
+### Phase 2b-2, slice 2a: plan cutter (added; not yet run)
+
+* New crate `crates/df-adapter`: `cut(plan) -> CutPlan` analyzes a real physical plan and reports fragments, their operators, inputs, output exchange, and task counts. It does not rewrite the plan yet.
+* `df-adapter::example` holds the example query, sample-data generation, and a session configured like the spike, shared by tests and demos.
+* Tests (run `cargo test -p df-adapter`): the example query must cut into exactly the 6 fragments above, with the expected operators, inputs, exchanges, and task counts (1, 1, 4, 4, 4, 1, total 15); and structural invariants (post-order ids, inputs precede consumers, only the root is delivered to the client) hold for three queries.
+* `df-spike` now also prints the cut and the dynamic-filter settings.
+* Not yet verified: written from the DataFusion 54/55 migration notes without compiling. The exact operator names and the plan shape in the test come from the spike output, but the test depends on the same session settings and data as the spike.
+
+### Next steps (drafted plan)
+
+Status when this was written: the spike ran, and the plan cutter (`df-adapter`, slice 2a) is added but not yet run. The remaining work is in three slices, then the benchmarking phase. Each slice has a verification step so problems surface early.
+
+#### Slice 2b: shuffle nodes (make a fragment a valid, serializable DataFusion plan)
+
+Goal: turn the cutter's analysis into real plans. Each fragment becomes a plan a worker can decode and run for one partition.
+
+* **`ShuffleWriteExec`** wraps a producer fragment's root. For task partition `i` it runs the fragment for input partition `i`, splits the output into N buckets (hash on the exchange keys, round-robin, or a single bucket for merge and coalesce), and stores the buckets in the worker's output store. Its own output stream is empty.
+* **`ShuffleReadExec`** is a leaf in the consumer fragment. For consumer partition `j` it pulls bucket `j` from every producer task through `FetchTaskOutput` and decodes the Arrow IPC bytes into a record-batch stream. For merge and coalesce exchanges, each producer task is its own partition, so `SortPreservingMergeExec` can merge sorted streams.
+* **Serialization:** implement a `PhysicalExtensionCodec` that encodes both nodes (schema, exchange kind, input fragment id, producer count), so plans travel in `ExecuteTaskRequest.fragment_plan`.
+* **Producer locations** are not known when the plan is built. The scheduler sends them in `ExecuteTaskRequest.inputs`, and the worker attaches them to the `ShuffleReadExec` nodes after decoding, keyed by input fragment id.
+* **Verification (the key test):** an in-process "mini scheduler" runs all 15 tasks of the example query one after another through an in-memory shuffle and compares the result with plain single-node DataFusion. Also test the codec round trip and write-then-read of each exchange kind. None of this needs a network.
+* **Risks:** custom `ExecutionPlan` nodes depend on the 55.1 trait (plan properties, `with_new_children`, `execute`), which changes between releases, so each API use is checked against the docs. Ordering metadata for the merge exchange must be preserved.
+
+#### Slice 3: real worker and scheduler integration
+
+Goal: replace the mock worker and the interim JSON plan format, so a real query runs across real workers.
+
+* **`worker` crate** implements `WorkerService`: `ExecuteTask` decodes the plan with the codec, wires up producer locations, runs the task's partition, and stores the output buckets; `FetchTaskOutput` serves buckets from the store. It registers, heartbeats, and reports status with metrics (start and end time, rows, bytes), which also fills `GetQueryMetrics`.
+* **Output store:** in memory first, spilling to disk later; buckets are removed when the query finishes (needs a cleanup RPC or a time limit).
+* **Scheduler integration:** `SubmitQuery` accepts a `datafusion-proto` physical plan. To keep the scheduler free of a DataFusion dependency, introduce a neutral `FragmentGraph` (fragments, inputs, exchange kinds, task counts, plan bytes per fragment). `df-adapter` produces it and the scheduler consumes it, replacing the JSON plan model for real queries.
+* **Client tool:** a small command-line client that registers Parquet tables, plans a SQL query with DataFusion, cuts it, submits it, and prints the result. The benchmark runner will use it.
+* **Data access:** plans embed file paths, so every worker needs the same data at the same path. Use identical local copies or an object store.
+* **Verification:** an end-to-end test with real workers in-process checks that the example query's result equals single-node DataFusion; then a TPC-H subset.
+* **Milestone 1 (correct end to end) is reached after this slice.**
+
+#### Slice 4: correctness at scale
+
+* Generate TPC-H data as Parquet at SF 1 for development and SF 10 for benchmarks, using a TPC-H generator (for example `tpchgen-rs`; availability to be checked).
+* Run the TPC-H queries on N workers and compare every result with single-node DataFusion. Record which queries hit unsupported operators or cut cases.
+* Decide scan split sizes so scan stages are parallel (this removes the single-partition round-robin seen in the spike plan).
+
+#### Phase 4: the scale-out study (the headline goal)
+
+* Infrastructure: 8 identical cloud instances, the same data on each (or an object store), a runner script, and metric collection from `GetQueryMetrics`.
+* Strong scaling at 1, 2, 4, 8 workers on SF 10; weak scaling with data growing in proportion to workers.
+* Per-stage time breakdown, shuffle volume, scheduling latency, and worker utilization; tuning sweeps over shuffle partitions and scan split size; a skew experiment.
+* Compare against single-node DataFusion on the same instance type and against the ideal 1/N curve; report speedup and efficiency, and explain the gaps with the T_serial / T_parallel / T_overhead model.
+* Milestones 2 and 3 are reached here.
+
+#### Decisions still open
+
+1. Dynamic filters: which setting disables them (the spike now lists the settings).
+2. Neutral `FragmentGraph` vs. converting the cutter's output to the existing fragmenter types (leaning neutral graph).
+3. Keep gRPC byte streaming for the data plane, or move to Arrow Flight (needs a `tonic` and `prost` upgrade); decide after measuring shuffle cost.
+4. Output cleanup policy on workers.
+5. How workers get the data (identical local copies, shared filesystem, or object store).

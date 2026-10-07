@@ -64,7 +64,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(&dir)?;
 
     // Four partitions, like a four-worker cluster.
-    let ctx = SessionContext::new_with_config(SessionConfig::new().with_target_partitions(4));
+    let ctx = SessionContext::new_with_config(SessionConfig::new().with_target_partitions(4).with_information_schema(true));
 
     // Prefer partitioned (shuffle) joins over collecting the whole left side.
     for stmt in [
@@ -93,6 +93,18 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     println!("== Operator tree ==");
     print_tree(&plan, 0);
+
+    println!("\n== Fragments (df-adapter cut) ==");
+    match df_adapter::cut(&plan) {
+        Ok(cut) => println!("{cut}"),
+        Err(e) => println!("cut failed: {e}"),
+    }
+
+    println!("\n== Dynamic-filter settings ==");
+    ctx.sql("SELECT name, value FROM information_schema.df_settings WHERE name LIKE '%dynamic%'")
+        .await?
+        .show()
+        .await?;
 
     let mut names = Vec::new();
     collect_names(&plan, &mut names);

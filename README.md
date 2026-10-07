@@ -15,8 +15,9 @@ query state. See [docs/DESIGN.md](docs/DESIGN.md) for the full design.
 | Mock worker (`crates/mock-worker`) | Registers, heartbeats, fakes task execution |
 | `FetchResults` and worker output service | Works end to end with mock workers (opaque bytes) |
 | End-to-end tests (`crates/scheduler/tests/e2e.rs`) | In-process scheduler and test workers over real gRPC |
-| DataFusion version spike (`crates/df-spike`) | Added: prints a real physical plan and round-trips it through `datafusion-proto` |
-| DataFusion adapter and real worker execution | Not yet (Phase 2b-2, slices 2 and 3) |
+| DataFusion version spike (`crates/df-spike`) | Works: prints a real physical plan, round-trips it through `datafusion-proto`, and executes it |
+| Plan cutter (`crates/df-adapter`) | Added: cuts a real plan into fragments and tasks (analysis only); run `cargo test -p df-adapter` |
+| Shuffle nodes and real worker execution | Not yet (Phase 2b-2, slice 2b onward) |
 
 ## Layout
 
@@ -101,6 +102,7 @@ and `cargo test` because DataFusion is a heavy build; run it explicitly:
 
 ```sh
 cargo run -p df-spike
+cargo test -p df-adapter
 ```
 
 ## Roadmap

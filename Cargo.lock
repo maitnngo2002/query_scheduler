@@ -1455,11 +1455,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "df-adapter"
+version = "0.1.0"
+dependencies = [
+ "datafusion",
+ "tokio",
+]
+
+[[package]]
 name = "df-spike"
 version = "0.1.0"
 dependencies = [
  "datafusion",
  "datafusion-proto",
+ "df-adapter",
  "tokio",
 ]
 

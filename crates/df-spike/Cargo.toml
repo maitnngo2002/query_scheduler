@@ -8,4 +8,5 @@ edition.workspace = true
 [dependencies]
 datafusion = "=55.1.0"
 datafusion-proto = "=55.1.0"
+df-adapter = { path = "../df-adapter" }
 tokio.workspace = true

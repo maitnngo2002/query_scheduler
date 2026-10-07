@@ -1,0 +1,11 @@
+[package]
+name = "df-adapter"
+version.workspace = true
+edition.workspace = true
+
+# Pinned to the same exact version as df-spike; see the design doc.
+[dependencies]
+datafusion = "=55.1.0"
+
+[dev-dependencies]
+tokio.workspace = true
