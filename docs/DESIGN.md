@@ -384,13 +384,57 @@ Not yet done
 * Memory limits and spilling for buckets.
 * Written first against the 54.0.0 sources, then corrected for 55.x after the first compile (see decision 4); any further signature differences will show up as compile errors.
 
+### Phase 2b-2, slice 2b-ii-a: plan serialization (added; not yet run)
+
+What was built (`crates/df-adapter/src/codec.rs`)
+
+* `ShuffleCodec` is a `PhysicalExtensionCodec`, so a whole fragment (standard operators plus `ShuffleWriteExec` and `ShuffleReadExec`) can be serialized with `datafusion-proto`, sent to a worker, and rebuilt. `encode_plan` and `decode_plan` wrap the byte functions.
+* Wire format of an extension node: one tag byte (1 = write, 2 = read) followed by a small protobuf message defined in the crate with `prost` (no `.proto` file or `protoc` needed). Children are serialized by DataFusion and handed back to the codec on decode.
+* Tests serialize every fragment of three queries, decode each into a new plan, run the decoded fragments, and require output identical to single-node DataFusion. A separate test checks the schema round trip.
+
+Decisions
+
+1. **Partitioning is serialized through a throwaway `RepartitionExec`.** A partitioning holds physical expressions (the hash keys). Instead of writing expression serialization by hand, the partitioning is wrapped in a `RepartitionExec` over an `EmptyExec`, serialized with DataFusion's own plan serialization, and unwrapped on decode. This works for any expression DataFusion can serialize. It is a deliberate shortcut: if DataFusion ever stops allowing a `RepartitionExec` over an `EmptyExec`, replace it with direct expression serialization.
+2. **The decode side supplies the store.** The codec holds a handle to the `ShuffleStore`, which decoded operators read from and write to. The network version will replace the store handle with a bucket fetcher.
+3. **Schemas travel as Arrow IPC** (a stream with no batches), reusing the helper that is already tested.
+4. **Known loss:** a decoded `ShuffleReadExec` keeps its schema and partitioning but not its ordering metadata. Execution does not depend on it; the merge operator above a reader carries its own sort expressions.
+5. **API facts (55.x):** `PhysicalExtensionCodec::try_decode` takes `(buf, inputs, task_ctx, proto_converter)` and `try_encode` takes `(node, buf, proto_converter)`; `physical_plan_to_bytes_with_extension_codec(plan, codec)` and `physical_plan_from_bytes_with_extension_codec(bytes, task_ctx, codec)` are the entry points. These were read from the 55.x docs, not from memory.
+
+Not yet done: fetching buckets over the network (slice 2b-ii-b), and passing producer locations into decoded readers.
+
+### Phase 2b-2, slice 2b-ii-b: network reads (added; not yet run)
+
+Why: the in-process store is invisible across machines. A consumer on one worker must be able to fetch a bucket that a producer wrote on another. (This is also recorded in `QA.md`.)
+
+What was built (`crates/df-adapter`)
+
+* `BucketSource` (in `store.rs`): the interface a reader uses to get a bucket. `ShuffleStore` implements it for local reads. `ShuffleReadExec` now holds a `BucketSource` instead of a fixed store, and fetches when its stream is first polled, so a fetch can be asynchronous.
+* `net.rs`:
+  * `BucketServer` implements the worker side of `FetchTaskOutput` over a store. Each `OutputChunk` holds one batch as a complete Arrow IPC stream; an empty bucket sends no chunks. It counts requests so tests can prove data crossed the network.
+  * `RoutedSource` knows which worker ran each producer task `(fragment, task) -> address`. Buckets on this worker are read from the local store; others are fetched from the owning worker over gRPC.
+* `ShuffleCodec::with_source` lets the decoding side choose where readers fetch from (writers still write to the local store).
+* The key test: two simulated workers, each with its own store and its own bucket server. Every task is decoded from bytes on the worker that runs it, so buckets produced on the other worker must cross gRPC. Results must equal plain single-node DataFusion, and the test also checks that both workers stored output and that fetches really happened. Two queries are covered.
+
+Decisions
+
+1. **Fetch from the producer, not a central store.** Data crosses the network once and nothing funnels through one machine, which matters for the scale-out measurements.
+2. **Local shortcut:** a bucket whose producer ran on this worker is read from memory, with no network.
+3. **One batch per message, one new connection per fetch.** Simple first; revisit after measuring.
+
+Known limits
+
+* A batch larger than tonic's default 4 MB message limit would fail; the limit can be raised or batches split.
+* The scheduler does not yet send producer locations to a real worker; the test builds the location map by hand. Wiring that into `ExecuteTask` is part of slice 3.
+* No retries, timeouts, or cleanup of old buckets.
+* New dependency edge: `df-adapter` now depends on `scheduler-proto` (tonic 0.12 / prost 0.13) alongside DataFusion (prost 0.14). They coexist as long as their types are not shared.
+
 ### Next steps (drafted plan)
 
 Status when this was written: the spike ran, and the plan cutter (`df-adapter`, slice 2a) is added but not yet run. The remaining work is in three slices, then the benchmarking phase. Each slice has a verification step so problems surface early.
 
 #### Slice 2b: shuffle nodes (make a fragment a valid, serializable DataFusion plan)
 
-Progress: the operators, the rewriter, and the local run are added (slice 2b-i, above). Serialization with a codec is the remaining part.
+Progress: the operators, the rewriter, and the local run (slice 2b-i), plan serialization with a codec (slice 2b-ii-a), and network reads (slice 2b-ii-b) are all added. Slice 2b is complete once the last two are verified; the real worker is slice 3.
 
 Goal: turn the cutter's analysis into real plans. Each fragment becomes a plan a worker can decode and run for one partition.
 

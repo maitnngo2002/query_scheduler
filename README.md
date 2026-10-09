@@ -18,7 +18,11 @@ query state. See [docs/DESIGN.md](docs/DESIGN.md) for the full design.
 | DataFusion version spike (`crates/df-spike`) | Works: prints a real physical plan, round-trips it through `datafusion-proto`, and executes it |
 | Plan cutter (`crates/df-adapter`) | Added: cuts a real plan into fragments and tasks (analysis only); run `cargo test -p df-adapter` |
 | Shuffle operators and local distributed run (`crates/df-adapter`) | Added: rewrites a real plan into fragment plans and runs all tasks locally, compared with single-node DataFusion |
-| Plan serialization, network shuffle, real worker | Not yet (Phase 2b-2, slice 2b-ii onward) |
+| Plan serialization (`crates/df-adapter/src/codec.rs`) | Added: fragments with shuffle operators round-trip through `datafusion-proto` |
+| Network shuffle (`crates/df-adapter/src/net.rs`) | Added: serve buckets over gRPC and fetch them from other workers; tested with two simulated workers |
+| Real worker and scheduler integration | Not yet (slice 3) |
+
+See [docs/QA.md](docs/QA.md) for a log of clarifying questions and answers.
 
 ## Layout
 

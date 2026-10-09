@@ -13,7 +13,8 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::ipc::reader::StreamReader;
 use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::error::Result;
+use datafusion::error::{DataFusionError, Result};
+use futures::future::BoxFuture;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct OutputKey {
@@ -60,6 +61,24 @@ impl ShuffleStore {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+}
+
+/// Where a `ShuffleReadExec` gets a bucket from: this process's store, or another worker.
+pub trait BucketSource: std::fmt::Debug + Send + Sync {
+    /// Returns all batches of one bucket. A bucket that was never written is an error;
+    /// an empty bucket is an empty list.
+    fn fetch(&self, key: OutputKey) -> BoxFuture<'static, Result<Vec<RecordBatch>>>;
+}
+
+impl BucketSource for ShuffleStore {
+    fn fetch(&self, key: OutputKey) -> BoxFuture<'static, Result<Vec<RecordBatch>>> {
+        let result = self.get(&key).ok_or_else(|| {
+            DataFusionError::Execution(format!(
+                "missing shuffle output {key:?}: the producer task has not run"
+            ))
+        });
+        Box::pin(futures::future::ready(result))
     }
 }
 
@@ -128,6 +147,20 @@ mod tests {
         assert_eq!(store.remove_query("a"), 2);
         assert_eq!(store.len(), 1);
         assert!(store.get(&key("b", 0, 0, 0)).is_some());
+    }
+
+    #[test]
+    fn store_acts_as_a_bucket_source() {
+        let store = ShuffleStore::new();
+        store.put(key("q", 0, 0, 0), vec![batch()]);
+        store.put(key("q", 0, 0, 1), vec![]);
+
+        let got = futures::executor::block_on(store.fetch(key("q", 0, 0, 0))).unwrap();
+        assert_eq!(got.len(), 1);
+        let empty = futures::executor::block_on(store.fetch(key("q", 0, 0, 1))).unwrap();
+        assert!(empty.is_empty());
+        let missing = futures::executor::block_on(store.fetch(key("q", 0, 0, 2)));
+        assert!(missing.is_err());
     }
 
     #[test]

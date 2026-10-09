@@ -7,6 +7,12 @@ edition.workspace = true
 [dependencies]
 datafusion = "=55.1.0"
 futures = "0.3"
+datafusion-proto = "=55.1.0"
+prost.workspace = true
+scheduler-proto = { path = "../scheduler-proto" }
+tonic.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true

@@ -26,9 +26,9 @@ use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, Partitioning,
     PhysicalExpr, PlanProperties,
 };
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 
-use crate::store::{OutputKey, ShuffleStore};
+use crate::store::{BucketSource, OutputKey, ShuffleStore};
 
 /// How a producer task splits its output into buckets.
 #[derive(Debug, Clone)]
@@ -74,6 +74,24 @@ impl ShuffleWriteExec {
             Boundedness::Bounded,
         ));
         ShuffleWriteExec { input, mode, query_id, fragment, store, properties }
+    }
+}
+
+impl ShuffleWriteExec {
+    pub fn input(&self) -> &Arc<dyn ExecutionPlan> {
+        &self.input
+    }
+
+    pub fn mode(&self) -> &WriteMode {
+        &self.mode
+    }
+
+    pub fn query_id(&self) -> &str {
+        &self.query_id
+    }
+
+    pub fn fragment(&self) -> usize {
+        self.fragment
     }
 }
 
@@ -216,7 +234,8 @@ pub struct ShuffleReadExec {
     /// Copied from the node this reader replaces, so the operators above it see
     /// exactly the partitioning and ordering they saw before the cut.
     properties: Arc<PlanProperties>,
-    store: Arc<ShuffleStore>,
+    /// Where buckets come from: the local store, or other workers over the network.
+    source: Arc<dyn BucketSource>,
 }
 
 impl ShuffleReadExec {
@@ -226,9 +245,27 @@ impl ShuffleReadExec {
         producer_tasks: usize,
         mode: ReadMode,
         properties: Arc<PlanProperties>,
-        store: Arc<ShuffleStore>,
+        source: Arc<dyn BucketSource>,
     ) -> Self {
-        ShuffleReadExec { query_id, input_fragment, producer_tasks, mode, properties, store }
+        ShuffleReadExec { query_id, input_fragment, producer_tasks, mode, properties, source }
+    }
+}
+
+impl ShuffleReadExec {
+    pub fn query_id(&self) -> &str {
+        &self.query_id
+    }
+
+    pub fn input_fragment(&self) -> usize {
+        self.input_fragment
+    }
+
+    pub fn producer_tasks(&self) -> usize {
+        self.producer_tasks
+    }
+
+    pub fn read_mode(&self) -> ReadMode {
+        self.mode
     }
 }
 
@@ -304,19 +341,19 @@ impl ExecutionPlan for ShuffleReadExec {
             }],
         };
 
-        let mut batches: Vec<RecordBatch> = Vec::new();
-        for key in &keys {
-            match self.store.get(key) {
-                Some(b) => batches.extend(b),
-                None => {
-                    return Err(DataFusionError::Execution(format!(
-                        "missing shuffle output {key:?}: the producer task has not run"
-                    )))
-                }
+        // Fetching may cross the network, so it happens when the stream is first polled.
+        let source = Arc::clone(&self.source);
+        let schema = self.schema();
+        let fetch_all = async move {
+            let mut batches: Vec<RecordBatch> = Vec::new();
+            for key in keys {
+                batches.extend(source.fetch(key).await?);
             }
-        }
-
-        let stream = futures::stream::iter(batches.into_iter().map(Ok::<RecordBatch, DataFusionError>));
-        Ok(Box::pin(RecordBatchStreamAdapter::new(self.schema(), stream)))
+            Ok::<_, DataFusionError>(futures::stream::iter(
+                batches.into_iter().map(Ok::<RecordBatch, DataFusionError>),
+            ))
+        };
+        let stream = futures::stream::once(fetch_all).try_flatten();
+        Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
     }
 }

@@ -1459,8 +1459,13 @@ name = "df-adapter"
 version = "0.1.0"
 dependencies = [
  "datafusion",
+ "datafusion-proto",
  "futures",
+ "prost 0.13.5",
+ "scheduler-proto",
  "tokio",
+ "tokio-stream",
+ "tonic",
 ]
 
 [[package]]

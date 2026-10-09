@@ -29,7 +29,9 @@ use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, Partitioning};
 
+pub mod codec;
 pub mod example;
+pub mod net;
 pub mod rewrite;
 pub mod shuffle;
 pub mod store;
