@@ -132,3 +132,8 @@ commits with the new author and force-push with `--force-with-lease`.
 **Should I create the repository myself?**
 Yes. The assistant has no access to GitHub, so the repository is created on github.com (empty,
 no README), and the assistant supplies commands and files.
+
+## Testing
+
+**What tests does `cargo test -p df-adapter` run?**
+24 tests in five groups. Cutter (2): the example query cuts into 6 fragments and 15 tasks, and fragment structure invariants hold. Store (6): put and get, empty versus missing buckets, per-query removal, the store as a bucket source, and Arrow IPC round trips. Rewriter (5): three queries run as fragments, one task at a time, must match plain DataFusion; the rewriter agrees with the cutter; reading before a producer ran is an error. Codec (4): three queries survive serialization and decoding with identical results, and schemas round trip. Network (7): fetching buckets over gRPC (full, empty, missing, local, unknown location), and two queries run across two simulated workers with separate stores, where buckets must cross gRPC and results must match plain DataFusion. Plain `cargo test` skips the DataFusion crates because they build slowly; run `cargo test -p df-adapter` for them, or `cargo test -p df-adapter -- --list` to print all test names.

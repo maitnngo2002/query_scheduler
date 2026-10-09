@@ -161,7 +161,6 @@ mod tests {
 
     use datafusion::arrow::array::{ArrayRef, Int32Array};
     use datafusion::arrow::util::pretty::pretty_format_batches;
-    use datafusion::physical_plan::ExecutionPlan;
     use futures::TryStreamExt;
     use scheduler_proto::v1::worker_service_server::WorkerServiceServer;
     use tonic::transport::Server;

@@ -19,7 +19,7 @@ use datafusion::physical_plan::{
 use futures::TryStreamExt;
 
 use crate::shuffle::{ReadMode, ShuffleReadExec, ShuffleWriteExec, WriteMode};
-use crate::store::ShuffleStore;
+use crate::store::{BucketSource, ShuffleStore};
 use crate::{cut, FragmentInfo};
 
 /// One fragment: its description and a plan that runs one task per partition.
@@ -71,6 +71,14 @@ struct Rewriter<'a> {
 }
 
 impl Rewriter<'_> {
+    /// The store as a `BucketSource`. Clone first, convert second: writing
+    /// `Arc::clone(self.store)` where a trait object is expected makes Rust look
+    /// for a clone of the trait object type instead.
+    fn source(&self) -> Arc<dyn BucketSource> {
+        let store: Arc<ShuffleStore> = Arc::clone(self.store);
+        store
+    }
+
     /// Rebuilds `plan` for the fragment currently being built, cutting at exchanges.
     fn build(&mut self, plan: &Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>> {
         // Hash / round-robin repartition: replaced by a reader of a new producer fragment.
@@ -94,7 +102,7 @@ impl Rewriter<'_> {
                 producer_tasks,
                 ReadMode::Bucket,
                 Arc::clone(plan.properties()),
-                Arc::clone(self.store),
+                self.source(),
             )));
         }
 
@@ -120,7 +128,7 @@ impl Rewriter<'_> {
                     producer_tasks,
                     ReadMode::PerProducer,
                     Arc::clone(child.properties()),
-                    Arc::clone(self.store),
+                    self.source(),
                 )));
             } else {
                 new_children.push(self.build(child)?);
