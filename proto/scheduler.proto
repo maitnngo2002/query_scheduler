@@ -57,12 +57,40 @@ message QueryOptions {
   uint64 timeout_ms = 2;
 }
 
+// Set exactly one of `plan` and `distributed`.
 message SubmitQueryRequest {
-  // Serialized physical plan (datafusion-proto in later phases).
+  // Interim format: the JSON encoding of the fragmenter's plan type.
   bytes plan = 1;
   QueryOptions options = 2;
+  // A real DataFusion plan, already cut into fragments by the client.
+  DistributedQuery distributed = 3;
 }
 message SubmitQueryResponse { string query_id = 1; }
+
+// A plan already cut into fragments. The scheduler builds its task graph from
+// this description and passes each fragment's plan bytes to workers untouched,
+// so it never needs to decode a DataFusion plan.
+message DistributedQuery {
+  // In post-order: every input has a smaller id, and the root fragment is last.
+  repeated DistributedFragment fragments = 1;
+}
+message DistributedFragment {
+  // Must equal the fragment's position in `fragments`.
+  uint32 id = 1;
+  // Number of tasks (one per partition of the fragment's root operator).
+  uint32 tasks = 2;
+  // Buckets each task writes: the hash or round-robin partition count, else 1.
+  uint32 output_partitions = 3;
+  repeated FragmentInput inputs = 4;
+  // datafusion-proto bytes of the fragment plan, opaque to the scheduler.
+  bytes plan = 5;
+}
+message FragmentInput {
+  uint32 fragment_id = 1;
+  // True for a hash or round-robin exchange: consumer task j reads bucket j of
+  // every producer task. False for merge or coalesce: it reads bucket 0.
+  bool partitioned = 2;
+}
 
 message GetQueryStatusRequest { string query_id = 1; }
 message TaskStatus {

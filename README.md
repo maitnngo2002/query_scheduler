@@ -21,7 +21,8 @@ query state. See [docs/DESIGN.md](docs/DESIGN.md) for the full design.
 | Plan serialization (`crates/df-adapter/src/codec.rs`) | Added: fragments with shuffle operators round-trip through `datafusion-proto` |
 | Network shuffle (`crates/df-adapter/src/net.rs`) | Added: serve buckets over gRPC and fetch them from other workers; tested with two simulated workers |
 | Real worker (`crates/worker`) | Added: runs serialized fragments with DataFusion, stores and serves buckets, reports status; tested with a stand-in scheduler |
-| Scheduler integration and client tool | Not yet (slices 3b and 3c) |
+| Scheduler integration (`DistributedQuery`) | Done: real DataFusion queries run through the scheduler on real workers; full-stack test in `crates/worker/tests/scheduler_e2e.rs` |
+| Client tool | Not yet (slice 3c) |
 
 See [docs/QA.md](docs/QA.md) for a log of clarifying questions and answers.
 

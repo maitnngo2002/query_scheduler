@@ -9,14 +9,15 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use fragmenter::tasks::{expand, ExpandConfig, TaskId};
+use fragmenter::tasks::{expand, ExpandConfig, TaskGraph, TaskId};
 use fragmenter::{fragment, PlanNode};
 use scheduler_proto::v1::worker_service_client::WorkerServiceClient;
 use scheduler_proto::v1::{
-    ExecuteTaskRequest, ProducerLocation, QueryState, TaskId as ProtoTaskId, TaskState,
+    DistributedQuery, ExecuteTaskRequest, ProducerLocation, QueryState, TaskId as ProtoTaskId, TaskState,
 };
 use tokio::sync::Notify;
 
+use crate::distributed;
 use crate::execution::{QueryExecution, TaskPhase};
 use crate::queries::{QueryError, QueryManager};
 use crate::workers::WorkerManager;
@@ -72,13 +73,24 @@ impl Engine {
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| SubmitError::BadPlan(e.to_string()))?;
 
+        Ok(self.register(graph, fragment_plans, priority))
+    }
+
+    /// Registers a real DataFusion query that the client has already cut into
+    /// fragments. The plan bytes are passed to workers untouched.
+    pub fn submit_distributed(&self, query: &DistributedQuery, priority: i32) -> Result<String, SubmitError> {
+        let (graph, fragment_plans) = distributed::task_graph(query).map_err(SubmitError::BadPlan)?;
+        Ok(self.register(graph, fragment_plans, priority))
+    }
+
+    fn register(&self, graph: TaskGraph, fragment_plans: Vec<Vec<u8>>, priority: i32) -> String {
         let query_id = self.queries.submit(priority);
         self.executions
             .lock()
             .unwrap()
             .insert(query_id.clone(), QueryExecution::new(query_id.clone(), graph, fragment_plans));
         self.wake();
-        Ok(query_id)
+        query_id
     }
 
     /// Applies a worker's status report for one task.
@@ -314,6 +326,28 @@ mod tests {
         let id = e.submit(plan.as_bytes(), 0).unwrap();
         assert_eq!(e.task_phases(&id).len(), 11);
         assert_eq!(e.queries.status(&id), Ok(QueryState::Queued));
+    }
+
+    #[test]
+    fn distributed_query_expands_into_its_tasks() {
+        use scheduler_proto::v1::{DistributedFragment, FragmentInput};
+        let fragment = |id: u32, tasks: u32, output_partitions: u32, inputs: Vec<FragmentInput>| {
+            DistributedFragment { id, tasks, output_partitions, inputs, plan: vec![1] }
+        };
+        let query = DistributedQuery {
+            fragments: vec![
+                fragment(0, 2, 3, vec![]),
+                fragment(1, 3, 1, vec![FragmentInput { fragment_id: 0, partitioned: true }]),
+                fragment(2, 1, 1, vec![FragmentInput { fragment_id: 1, partitioned: false }]),
+            ],
+        };
+        let e = engine();
+        let id = e.submit_distributed(&query, 0).unwrap();
+        assert_eq!(e.task_phases(&id).len(), 6);
+        assert_eq!(e.queries.status(&id), Ok(QueryState::Queued));
+
+        let bad = DistributedQuery { fragments: vec![] };
+        assert!(matches!(e.submit_distributed(&bad, 0), Err(SubmitError::BadPlan(_))));
     }
 
     #[test]

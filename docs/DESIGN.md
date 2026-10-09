@@ -206,7 +206,7 @@ Run on separate machines with a fixed size (for example cloud instances with the
 | 2a | Task dispatch end to end with mock workers (done): JSON plan input, slot-aware assignment, completion, failure, cancel |
 | 2a.1 | Automated end-to-end tests (done) |
 | 2b-1 | Worker output service and `FetchResults` (done) |
-| 2b-2 | Milestone 1: DataFusion adapter and real worker execution (next) |
+| 2b-2 | Milestone 1: DataFusion adapter and real worker execution (done, with Phase 3a/3b: a real query runs through the scheduler on real workers) |
 | 3 | Milestone 2: task expander, hash shuffle, dynamic assignment, first scaling numbers |
 | 4 | Milestone 3: full TPC-H scaling study, bottleneck analysis, skew and retry |
 | 5 | Stretch goals and write-up |
@@ -451,6 +451,34 @@ Not yet done: the scheduler does not yet accept real DataFusion plans or send pl
 * The dispatcher already sends plan bytes and producer locations with each task, so it needs no change.
 * The client side (in `df-adapter`) turns a `DistributedPlan` into that message.
 
+### Phase 3b: scheduler integration (done)
+
+A real DataFusion query now runs through the real scheduler on real workers, and its result matches single-node DataFusion.
+
+What was built
+
+* **Proto:** `SubmitQueryRequest` has a new field `distributed` (a `DistributedQuery`) next to the JSON `plan`. A `DistributedQuery` is a list of `DistributedFragment`s in post-order, each with its id, task count, output partition (bucket) count, inputs (`FragmentInput`: fragment id plus `partitioned`), and the `datafusion-proto` plan bytes.
+* **Scheduler (`crates/scheduler/src/distributed.rs`):** `task_graph(query)` checks the description and builds the same `TaskGraph` the JSON path builds, plus the per-fragment plan bytes. A partitioned input gives consumer task `j` bucket `j` of every producer; a merge or coalesce input gives bucket 0. `Engine::submit_distributed` registers the query through the same path as `submit`, so the dispatcher, stage barrier, status, and `FetchResults` are unchanged. The service routes on whichever field is set.
+* **Client side (`crates/df-adapter/src/submit.rs`):** `distributed_query(&DistributedPlan)` serializes each fragment with the `ShuffleCodec` and fills in the description from `FragmentInfo` (`output_buckets()` for the bucket count; an input is partitioned when its producer's exchange is hash or round-robin).
+* **Full-stack test (`crates/worker/tests/scheduler_e2e.rs`):** a real scheduler and two real workers (2 slots each) on local ports. Workers register and heartbeat on their own; the client plans a query, cuts it, submits it as a `DistributedQuery`, polls status, and fetches the result through the scheduler's `FetchResults`. Three queries (the example join, a grouped aggregate, a filtered sorted scan) must equal plain DataFusion; for the example query all 15 tasks must succeed and both workers must run tasks.
+
+Decisions
+
+1. **Neutral fragment description, not a scheduler-side DataFusion decoder** (resolves open decision 2). The scheduler trusts the client's task counts and never decodes plan bytes, so it builds and tests without DataFusion. `cargo tree -p scheduler` confirms no DataFusion dependency.
+2. **A separate `distributed` field rather than a `oneof` with `plan`.** A `oneof` would change the generated Rust type of `plan` and force edits to every JSON-path caller. The server enforces "exactly one": both set, or neither, is `INVALID_ARGUMENT`.
+3. **The scheduler validates what it trusts.** It rejects: no fragments, ids that do not match positions, zero tasks or buckets, empty plan bytes, inputs that do not precede their consumer, a partitioned input whose producer's bucket count differs from the consumer's task count (some buckets would never be read), a non-partitioned input whose producer writes more than one bucket (data would be lost), and a root that writes more than one bucket (`FetchResults` reads bucket 0).
+4. **The full-stack test lives in the worker crate,** with `scheduler` and `fragmenter` as dev-dependencies, because it needs DataFusion to plan the query and compute the expected result.
+5. **`ExpandConfig` does not apply to distributed queries.** Their task counts come from the plan (DataFusion's `target_partitions` and scan partitioning). `SCHEDULER_SHUFFLE_PARTITIONS` and `SCHEDULER_SCAN_SPLITS` still apply only to JSON plans.
+
+Known gaps
+
+* `ProducerLocation.bucket` is filled in by the scheduler but ignored by the worker: a `ShuffleReadExec` picks the bucket from its own partition index. Both agree today; if they ever diverge, nothing will notice.
+* No client tool yet (slice 3c); the test plays the client.
+* Everything still runs on one machine, so this proves correctness, not speedup.
+* The earlier gaps remain: no recompute of lost outputs, no retries, no bucket cleanup, cancellation does not stop running tasks, a new connection per dispatch and per fetch.
+
+Verification: `cargo test` (scheduler unit tests for `task_graph` and `submit_distributed`, plus an e2e test that inconsistent distributed queries get `INVALID_ARGUMENT`) and `cargo test -p df-adapter -p worker` (the `distributed_query` description test and the full-stack test). The full-stack test passed on every one of 5 repeated runs, in about 0.6 s each. `cargo test --workspace` passes, and clippy shows no new warnings.
+
 ### Next steps (drafted plan)
 
 Status when this was written: the spike ran, and the plan cutter (`df-adapter`, slice 2a) is added but not yet run. The remaining work is in three slices, then the benchmarking phase. Each slice has a verification step so problems surface early.
@@ -497,7 +525,7 @@ Goal: replace the mock worker and the interim JSON plan format, so a real query 
 #### Decisions still open
 
 1. ~~Dynamic filters: which setting disables them.~~ Resolved: set `enable_dynamic_filter_pushdown` to false (required, see slice 2b-i).
-2. Neutral `FragmentGraph` vs. converting the cutter's output to the existing fragmenter types (leaning neutral graph).
+2. ~~Neutral `FragmentGraph` vs. converting the cutter's output to the existing fragmenter types.~~ Resolved: a neutral description, the `DistributedQuery` message (see Phase 3b).
 3. Keep gRPC byte streaming for the data plane, or move to Arrow Flight (needs a `tonic` and `prost` upgrade); decide after measuring shuffle cost.
 4. Output cleanup policy on workers.
 5. How workers get the data (identical local copies, shared filesystem, or object store).

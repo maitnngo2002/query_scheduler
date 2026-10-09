@@ -13,7 +13,8 @@ use scheduler_proto::v1::scheduler_service_client::SchedulerServiceClient;
 use scheduler_proto::v1::worker_registry_client::WorkerRegistryClient;
 use scheduler_proto::v1::worker_service_server::{WorkerService, WorkerServiceServer};
 use scheduler_proto::v1::{
-    ExecuteTaskRequest, ExecuteTaskResponse, FetchResultsRequest, FetchTaskOutputRequest,
+    DistributedFragment, DistributedQuery, ExecuteTaskRequest, ExecuteTaskResponse, FetchResultsRequest,
+    FragmentInput, FetchTaskOutputRequest,
     GetQueryStatusRequest, GetQueryStatusResponse, OutputChunk, QueryState, RegisterWorkerRequest,
     ReportTaskStatusRequest, SubmitQueryRequest, TaskState, WorkerResources,
 };
@@ -171,7 +172,7 @@ async fn start_worker(scheduler_url: &str, behavior: Behavior, slots: u32) -> Wo
 
 async fn submit_example(client: &mut SchedulerServiceClient<Channel>) -> String {
     client
-        .submit_query(SubmitQueryRequest { plan: EXAMPLE_PLAN.as_bytes().to_vec(), options: None })
+        .submit_query(SubmitQueryRequest { plan: EXAMPLE_PLAN.as_bytes().to_vec(), options: None, distributed: None })
         .await
         .unwrap()
         .into_inner()
@@ -288,13 +289,45 @@ async fn invalid_plans_are_rejected() {
     let url = start_scheduler().await;
     let mut client = connect_scheduler(&url).await;
     let err = match client
-        .submit_query(SubmitQueryRequest { plan: b"not a plan".to_vec(), options: None })
+        .submit_query(SubmitQueryRequest { plan: b"not a plan".to_vec(), options: None, distributed: None })
         .await
     {
         Err(status) => status,
         Ok(_) => panic!("submit_query should reject garbage"),
     };
     assert_eq!(err.code(), tonic::Code::InvalidArgument);
+}
+
+#[tokio::test]
+async fn inconsistent_distributed_queries_are_rejected() {
+    let url = start_scheduler().await;
+    let mut client = connect_scheduler(&url).await;
+    let fragment = DistributedFragment { id: 0, tasks: 1, output_partitions: 1, inputs: vec![], plan: vec![1] };
+    let bad_requests = [
+        // No fragments.
+        SubmitQueryRequest { plan: vec![], options: None, distributed: Some(DistributedQuery { fragments: vec![] }) },
+        // Both plan forms at once.
+        SubmitQueryRequest {
+            plan: EXAMPLE_PLAN.as_bytes().to_vec(),
+            options: None,
+            distributed: Some(DistributedQuery { fragments: vec![fragment.clone()] }),
+        },
+        // A fragment reading one that does not precede it.
+        SubmitQueryRequest {
+            plan: vec![],
+            options: None,
+            distributed: Some(DistributedQuery {
+                fragments: vec![DistributedFragment {
+                    inputs: vec![FragmentInput { fragment_id: 0, partitioned: false }],
+                    ..fragment
+                }],
+            }),
+        },
+    ];
+    for request in bad_requests {
+        let err = client.submit_query(request).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument, "{}", err.message());
+    }
 }
 
 #[tokio::test]

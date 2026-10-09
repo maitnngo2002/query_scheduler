@@ -3651,7 +3651,9 @@ version = "0.1.0"
 dependencies = [
  "datafusion",
  "df-adapter",
+ "fragmenter",
  "futures",
+ "scheduler",
  "scheduler-proto",
  "tokio",
  "tonic",

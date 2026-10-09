@@ -1,6 +1,7 @@
 //! Query scheduler library. The `scheduler` binary is a thin wrapper around it;
 //! integration tests use it to start an in-process scheduler.
 
+pub mod distributed;
 pub mod engine;
 pub mod execution;
 pub mod queries;

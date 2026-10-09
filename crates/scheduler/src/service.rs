@@ -84,11 +84,16 @@ impl SchedulerService for SchedulerSvc {
         request: Request<SubmitQueryRequest>,
     ) -> Result<Response<SubmitQueryResponse>, Status> {
         let req = request.into_inner();
-        if req.plan.is_empty() {
-            return Err(Status::invalid_argument("plan must not be empty"));
-        }
         let priority = req.options.map(|o| o.priority).unwrap_or(0);
-        let query_id = self.engine.submit(&req.plan, priority).map_err(|e| match e {
+        let submitted = match (&req.distributed, req.plan.is_empty()) {
+            (Some(_), false) => {
+                return Err(Status::invalid_argument("set either plan or distributed, not both"))
+            }
+            (Some(query), true) => self.engine.submit_distributed(query, priority),
+            (None, true) => return Err(Status::invalid_argument("plan must not be empty")),
+            (None, false) => self.engine.submit(&req.plan, priority),
+        };
+        let query_id = submitted.map_err(|e| match e {
             SubmitError::BadPlan(msg) => Status::invalid_argument(msg),
         })?;
         Ok(Response::new(SubmitQueryResponse { query_id }))

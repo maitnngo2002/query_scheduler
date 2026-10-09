@@ -11,3 +11,9 @@ datafusion = "=55.1.0"
 futures = "0.3"
 tonic.workspace = true
 tokio.workspace = true
+
+# The full-stack test starts a real scheduler in-process. Only a dev-dependency,
+# so the scheduler crate itself stays free of DataFusion.
+[dev-dependencies]
+scheduler = { path = "../scheduler" }
+fragmenter = { path = "../fragmenter" }

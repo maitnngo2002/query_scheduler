@@ -35,6 +35,7 @@ pub mod net;
 pub mod rewrite;
 pub mod shuffle;
 pub mod store;
+pub mod submit;
 
 /// How a fragment's output reaches its consumer.
 #[derive(Debug, Clone, PartialEq, Eq)]
