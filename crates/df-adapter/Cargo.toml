@@ -6,6 +6,7 @@ edition.workspace = true
 # Pinned to the same exact version as df-spike; see the design doc.
 [dependencies]
 datafusion = "=55.1.0"
+futures = "0.3"
 
 [dev-dependencies]
 tokio.workspace = true

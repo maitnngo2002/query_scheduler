@@ -17,7 +17,8 @@ query state. See [docs/DESIGN.md](docs/DESIGN.md) for the full design.
 | End-to-end tests (`crates/scheduler/tests/e2e.rs`) | In-process scheduler and test workers over real gRPC |
 | DataFusion version spike (`crates/df-spike`) | Works: prints a real physical plan, round-trips it through `datafusion-proto`, and executes it |
 | Plan cutter (`crates/df-adapter`) | Added: cuts a real plan into fragments and tasks (analysis only); run `cargo test -p df-adapter` |
-| Shuffle nodes and real worker execution | Not yet (Phase 2b-2, slice 2b onward) |
+| Shuffle operators and local distributed run (`crates/df-adapter`) | Added: rewrites a real plan into fragment plans and runs all tasks locally, compared with single-node DataFusion |
+| Plan serialization, network shuffle, real worker | Not yet (Phase 2b-2, slice 2b-ii onward) |
 
 ## Layout
 

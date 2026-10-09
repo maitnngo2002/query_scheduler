@@ -30,6 +30,9 @@ use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMerge
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, Partitioning};
 
 pub mod example;
+pub mod rewrite;
+pub mod shuffle;
+pub mod store;
 
 /// How a fragment's output reaches its consumer.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -63,8 +63,11 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir)?;
 
-    // Four partitions, like a four-worker cluster.
-    let ctx = SessionContext::new_with_config(SessionConfig::new().with_target_partitions(4).with_information_schema(true));
+    // Four partitions, like a four-worker cluster. Dynamic filters are off because they
+    // cannot work across separately running tasks (see the design doc).
+    let mut config = SessionConfig::new().with_target_partitions(4).with_information_schema(true);
+    config.options_mut().optimizer.enable_dynamic_filter_pushdown = false;
+    let ctx = SessionContext::new_with_config(config);
 
     // Prefer partitioned (shuffle) joins over collecting the whole left side.
     for stmt in [

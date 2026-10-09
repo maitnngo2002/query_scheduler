@@ -1459,6 +1459,7 @@ name = "df-adapter"
 version = "0.1.0"
 dependencies = [
  "datafusion",
+ "futures",
  "tokio",
 ]
 

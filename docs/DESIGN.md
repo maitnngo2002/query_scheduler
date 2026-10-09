@@ -360,11 +360,37 @@ What it taught us, and decisions
 * `df-spike` now also prints the cut and the dynamic-filter settings.
 * Not yet verified: written from the DataFusion 54/55 migration notes without compiling. The exact operator names and the plan shape in the test come from the spike output, but the test depends on the same session settings and data as the spike.
 
+### Phase 2b-2, slice 2b-i: shuffle operators and a local distributed run (added; not yet run)
+
+What was built (in `crates/df-adapter`)
+
+* `store.rs`: an in-memory `ShuffleStore` keyed by (query, fragment, task, bucket), plus Arrow IPC encode and decode helpers. Empty buckets are stored too, so a reader can tell "empty" from "producer never ran".
+* `shuffle.rs`: `ShuffleWriteExec` (runs one input partition, splits it into buckets with DataFusion's own `BatchPartitioner`, stores them, yields no rows) and `ShuffleReadExec` (a leaf that reads buckets back). Two read modes: `Bucket` (hash and round-robin: output partition `j` reads bucket `j` of every producer) and `PerProducer` (merge and coalesce: output partition `p` reads producer `p`).
+* `rewrite.rs`: `distribute(plan, query_id, store)` rebuilds a real plan into fragment plans, replacing each exchange. Fragment order matches the cutter exactly. `run_locally` runs every task of every fragment one after another in one process and returns the root output.
+* Tests compare `run_locally` with plain single-node DataFusion on three queries (the example query, a grouped aggregate, and a filtered sorted scan) and require identical output, check that fragment descriptions match the cutter, and check that reading a bucket before its producer ran is an error. Each distributed run has a 60 second timeout so a hang fails the test instead of freezing it.
+
+Decisions and findings
+
+1. **Dynamic filters must be off.** With dynamic filter pushdown on, a partitioned hash join makes each partition wait for all other partitions to report their build side. When partitions run as separate tasks or on separate workers, that wait never ends, so the query would hang, not just run slower. The master setting is `datafusion.optimizer.enable_dynamic_filter_pushdown` (it overrides the join, top-k, and aggregate switches); the example session and the spike now set it to false. Every session that plans a distributed query must do the same. (Names verified in the DataFusion 54 and later config docs.)
+2. **Readers copy the properties of the node they replace** (partitioning, ordering, equivalences), so the operators above a cut see exactly what they saw before. Sharing the same properties object also lets DataFusion skip recomputing them.
+3. **Hash partitioning reuses DataFusion's `BatchPartitioner`.** Rows land where `RepartitionExec` would put them, and both sides of a join agree. API note: in recent DataFusion `BatchPartitioner::try_new` takes the input partition and input partition count, and there are separate hash and round-robin constructors (verified in the 54.0.0 source).
+4. **DataFusion 55 API changes hit on first compile.** The first build against the pinned 55.1.0 failed because `ExecutionPlan::apply_expressions` became a required method in 55, and `with_new_children` was deprecated in favor of `replace_children(children, ReplaceChildrenOptions)` (modes `Keep` and `Recompute` for plan properties). Lesson: reading the 54.0.0 source was not enough; check the 55.x upgrade guide for every trait we implement. Fixes: both shuffle operators implement `apply_expressions` (the writer visits its hash-key expressions, the reader owns none), and the rewriter calls `replace_children` with `Recompute`.
+5. **The store is read in-process for now.** The worker will serve the same buckets over `FetchTaskOutput`; the IPC helpers are the encoding for that.
+
+Not yet done
+
+* Serializing the two operators (a `PhysicalExtensionCodec`) so plans can be sent to workers.
+* Fetching buckets over the network instead of the in-process store.
+* Memory limits and spilling for buckets.
+* Written first against the 54.0.0 sources, then corrected for 55.x after the first compile (see decision 4); any further signature differences will show up as compile errors.
+
 ### Next steps (drafted plan)
 
 Status when this was written: the spike ran, and the plan cutter (`df-adapter`, slice 2a) is added but not yet run. The remaining work is in three slices, then the benchmarking phase. Each slice has a verification step so problems surface early.
 
 #### Slice 2b: shuffle nodes (make a fragment a valid, serializable DataFusion plan)
+
+Progress: the operators, the rewriter, and the local run are added (slice 2b-i, above). Serialization with a codec is the remaining part.
 
 Goal: turn the cutter's analysis into real plans. Each fragment becomes a plan a worker can decode and run for one partition.
 
@@ -403,7 +429,7 @@ Goal: replace the mock worker and the interim JSON plan format, so a real query 
 
 #### Decisions still open
 
-1. Dynamic filters: which setting disables them (the spike now lists the settings).
+1. ~~Dynamic filters: which setting disables them.~~ Resolved: set `enable_dynamic_filter_pushdown` to false (required, see slice 2b-i).
 2. Neutral `FragmentGraph` vs. converting the cutter's output to the existing fragmenter types (leaning neutral graph).
 3. Keep gRPC byte streaming for the data plane, or move to Arrow Flight (needs a `tonic` and `prost` upgrade); decide after measuring shuffle cost.
 4. Output cleanup policy on workers.
