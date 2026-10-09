@@ -133,19 +133,28 @@ fn decode_err(e: prost::DecodeError) -> DataFusionError {
 pub struct ShuffleCodec {
     store: Arc<ShuffleStore>,
     source: Arc<dyn BucketSource>,
+    /// When set, decoded operators use this query id instead of the one in the bytes.
+    query_id: Option<String>,
 }
 
 impl ShuffleCodec {
     /// Writers and readers both use `store` (single-process use).
     pub fn new(store: Arc<ShuffleStore>) -> Self {
         let source: Arc<dyn BucketSource> = Arc::clone(&store) as Arc<dyn BucketSource>;
-        ShuffleCodec { store, source }
+        ShuffleCodec { store, source, query_id: None }
     }
 
     /// Writers write to `store`; readers fetch through `source` (for example a
     /// [`crate::net::RoutedSource`]).
     pub fn with_source(store: Arc<ShuffleStore>, source: Arc<dyn BucketSource>) -> Self {
-        ShuffleCodec { store, source }
+        ShuffleCodec { store, source, query_id: None }
+    }
+
+    /// Makes decoded operators use `query_id`. A plan is built before the scheduler
+    /// assigns the real query id, so the worker overrides the placeholder it carries.
+    pub fn with_query_id(mut self, query_id: String) -> Self {
+        self.query_id = Some(query_id);
+        self
     }
 }
 
@@ -180,7 +189,7 @@ impl PhysicalExtensionCodec for ShuffleCodec {
                 Ok(Arc::new(ShuffleWriteExec::new(
                     input,
                     mode,
-                    msg.query_id,
+                    self.query_id.clone().unwrap_or(msg.query_id),
                     msg.fragment as usize,
                     Arc::clone(&self.store),
                 )))
@@ -206,7 +215,7 @@ impl PhysicalExtensionCodec for ShuffleCodec {
                 ));
                 let mode = if msg.per_producer { ReadMode::PerProducer } else { ReadMode::Bucket };
                 Ok(Arc::new(ShuffleReadExec::new(
-                    msg.query_id,
+                    self.query_id.clone().unwrap_or(msg.query_id),
                     msg.input_fragment as usize,
                     msg.producer_tasks as usize,
                     mode,

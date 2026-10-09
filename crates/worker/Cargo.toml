@@ -1,0 +1,13 @@
+[package]
+name = "worker"
+version.workspace = true
+edition.workspace = true
+
+# DataFusion is pinned to the same exact version as df-adapter.
+[dependencies]
+df-adapter = { path = "../df-adapter" }
+scheduler-proto = { path = "../scheduler-proto" }
+datafusion = "=55.1.0"
+futures = "0.3"
+tonic.workspace = true
+tokio.workspace = true

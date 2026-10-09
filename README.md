@@ -20,7 +20,8 @@ query state. See [docs/DESIGN.md](docs/DESIGN.md) for the full design.
 | Shuffle operators and local distributed run (`crates/df-adapter`) | Added: rewrites a real plan into fragment plans and runs all tasks locally, compared with single-node DataFusion |
 | Plan serialization (`crates/df-adapter/src/codec.rs`) | Added: fragments with shuffle operators round-trip through `datafusion-proto` |
 | Network shuffle (`crates/df-adapter/src/net.rs`) | Added: serve buckets over gRPC and fetch them from other workers; tested with two simulated workers |
-| Real worker and scheduler integration | Not yet (slice 3) |
+| Real worker (`crates/worker`) | Added: runs serialized fragments with DataFusion, stores and serves buckets, reports status; tested with a stand-in scheduler |
+| Scheduler integration and client tool | Not yet (slices 3b and 3c) |
 
 See [docs/QA.md](docs/QA.md) for a log of clarifying questions and answers.
 

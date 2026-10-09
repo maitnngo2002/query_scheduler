@@ -7,9 +7,10 @@ members = [
     "crates/mock-worker",
     "crates/df-spike",
     "crates/df-adapter",
+    "crates/worker",
 ]
 # DataFusion is a heavy build, so plain `cargo build` / `cargo test` skip the
-# DataFusion crates (df-spike, df-adapter). CI uses `--workspace` and builds everything.
+# DataFusion crates (df-spike, df-adapter, worker). CI uses `--workspace` and builds everything.
 default-members = [
     "crates/scheduler-proto",
     "crates/fragmenter",

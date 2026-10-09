@@ -428,6 +428,29 @@ Known limits
 * No retries, timeouts, or cleanup of old buckets.
 * New dependency edge: `df-adapter` now depends on `scheduler-proto` (tonic 0.12 / prost 0.13) alongside DataFusion (prost 0.14). They coexist as long as their types are not shared.
 
+### Phase 3a: real worker (added; not yet run)
+
+What was built (`crates/worker`)
+
+* A `worker` library and binary. It registers with the scheduler, heartbeats (and registers again if the scheduler forgets it), and implements both halves of the worker API.
+* `ExecuteTask`: validates the request, accepts immediately, and runs the task in the background. It decodes the fragment with a `ShuffleCodec` whose readers fetch through a router built from the producer locations in the request (local buckets from memory, others over gRPC), runs partition `task.partition` with DataFusion, and reports success or failure with start and end time, output rows, and output bytes. A shuffle writer stores its own buckets while it runs; the root fragment has no writer, so its output is kept as bucket 0 for `FetchResults`.
+* `FetchTaskOutput`: delegated to the bucket server from the network slice, so one worker serves both its own tasks and other workers' reads.
+* Tests: a stand-in scheduler that only records status reports dispatches the 15 tasks of the example query by hand to two real workers over gRPC, waits for each stage, then fetches the final result from the root task's worker and compares it with plain DataFusion. Further tests check that a bad plan is accepted and then reported as failed, and that an empty plan is rejected immediately.
+
+Decisions
+
+1. **The placeholder query id is overridden by the worker.** A plan is built before the scheduler assigns the real query id, and the shuffle operators embed one. `ShuffleCodec::with_query_id` makes the worker replace whatever the bytes carry with the id from the task, so the client can plan with any placeholder.
+2. **Accept first, report later.** `ExecuteTask` returns as soon as the request is valid, matching what the scheduler's dispatcher already expects; the outcome arrives through `ReportTaskStatus`.
+3. **`FragmentInfo::output_buckets()`** (hash or round-robin partition count, otherwise 1) is the single place that says how many buckets a task writes; it fills `output_partitions` in the request.
+
+Not yet done: the scheduler does not yet accept real DataFusion plans or send plan bytes and producer locations itself (slice 3b); no client tool (slice 3c); no cleanup of old buckets; no cancellation of a running task.
+
+#### Design for slice 3b (scheduler integration)
+
+* `SubmitQuery` gets a second way to carry a plan: a `DistributedQuery` message holding, per fragment, its id, task count, output partition count, which input fragments it reads and whether each read is hash-partitioned, and the plan bytes. The scheduler stays free of DataFusion: it builds its task graph from this description with a small function, and passes the plan bytes through to workers untouched. The existing JSON path stays for its tests.
+* The dispatcher already sends plan bytes and producer locations with each task, so it needs no change.
+* The client side (in `df-adapter`) turns a `DistributedPlan` into that message.
+
 ### Next steps (drafted plan)
 
 Status when this was written: the spike ran, and the plan cutter (`df-adapter`, slice 2a) is added but not yet run. The remaining work is in three slices, then the benchmarking phase. Each slice has a verification step so problems surface early.

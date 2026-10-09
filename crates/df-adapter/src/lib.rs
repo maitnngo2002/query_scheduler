@@ -74,6 +74,17 @@ pub struct FragmentInfo {
     pub tasks: usize,
 }
 
+impl FragmentInfo {
+    /// Number of buckets each task of this fragment writes: the partition count of a
+    /// hash or round-robin exchange, otherwise 1 (merge, coalesce, or the root).
+    pub fn output_buckets(&self) -> usize {
+        match &self.output {
+            Some(Exchange::Hash(n)) | Some(Exchange::RoundRobin(n)) => *n,
+            _ => 1,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CutPlan {
     /// In post-order; the root fragment is last.
